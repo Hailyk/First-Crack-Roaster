@@ -17,6 +17,8 @@ static const char *TAG = "WIFI_MODULE";
 
 static roaster_state_t *g_roaster_state = NULL;
 static httpd_handle_t server = NULL;
+static esp_event_handler_instance_t wifi_any_id = NULL;
+static esp_event_handler_instance_t wifi_got_ip = NULL;
 
 static esp_err_t ws_handler(httpd_req_t *req) {
     if (req->method == HTTP_GET) {
@@ -31,7 +33,7 @@ static esp_err_t ws_handler(httpd_req_t *req) {
     httpd_ws_frame_t ws_pkt;
     uint8_t buf[128] = {0};
     memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
-    ws_pkt.payload = buf;
+    ws_pkt.payload = buf; // Pre-allocate buffer for receiving data
     ws_pkt.type = HTTPD_WS_TYPE_TEXT;
 
     esp_err_t ret = httpd_ws_recv_frame(req, &ws_pkt, sizeof(buf) - 1);
@@ -111,7 +113,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     }
 }
 
-static esp_err_t wifi_init_sta(void) {
+static esp_err_t wifi_init_sta(const char *ssid, const char *password) {
     esp_err_t ret = esp_netif_init();
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
         return ret;
@@ -130,9 +132,6 @@ static esp_err_t wifi_init_sta(void) {
         return ret;
     }
 
-    esp_event_handler_instance_t wifi_any_id;
-    esp_event_handler_instance_t wifi_got_ip;
-
     ret = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &wifi_any_id);
     if (ret != ESP_OK) {
         return ret;
@@ -143,12 +142,9 @@ static esp_err_t wifi_init_sta(void) {
         return ret;
     }
 
-    wifi_config_t wifi_config = {
-        .sta = {
-            .ssid = "Hidden Network",
-            .password = "KnownSignal",
-        },
-    };
+    wifi_config_t wifi_config = {0};
+    strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
+    strncpy((char *)wifi_config.sta.password, password, sizeof(wifi_config.sta.password) - 1);
 
     ret = esp_wifi_set_mode(WIFI_MODE_STA);
     if (ret != ESP_OK) {
@@ -163,8 +159,8 @@ static esp_err_t wifi_init_sta(void) {
     return esp_wifi_start();
 }
 
-esp_err_t wifi_start(roaster_state_t *state) {
-    if (state == NULL) {
+esp_err_t wifi_start(roaster_state_t *state, const char *ssid, const char *password) {
+    if (state == NULL || ssid == NULL || password == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -182,7 +178,7 @@ esp_err_t wifi_start(roaster_state_t *state) {
         return ret;
     }
 
-    ret = wifi_init_sta();
+    ret = wifi_init_sta(ssid, password);
     if (ret != ESP_OK) {
         return ret;
     }
@@ -211,5 +207,38 @@ esp_err_t wifi_start(roaster_state_t *state) {
     }
 
     ESP_LOGI(TAG, "WebSocket Server Started!");
+    return ESP_OK;
+}
+
+esp_err_t wifi_stop(void) {
+    esp_err_t ret = ESP_OK;
+
+    if (server != NULL) {
+        ret = httpd_stop(server);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        server = NULL;
+    }
+
+    ret = esp_wifi_stop();
+    if (ret != ESP_OK && ret != ESP_ERR_WIFI_NOT_STARTED) {
+        return ret;
+    }
+
+    if (wifi_any_id != NULL) {
+        esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_any_id);
+        wifi_any_id = NULL;
+    }
+
+    if (wifi_got_ip != NULL) {
+        esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_got_ip);
+        wifi_got_ip = NULL;
+    }
+
+    esp_wifi_deinit();
+    esp_netif_deinit();
+
+    ESP_LOGI(TAG, "WiFi stopped");
     return ESP_OK;
 }

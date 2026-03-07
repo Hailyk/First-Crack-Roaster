@@ -17,7 +17,7 @@ void app_main(void) {
         .drum = 0,
     };
 
-    esp_err_t ret = wifi_start(&roaster_state);
+    esp_err_t ret = wifi_start(&roaster_state, "Hidden Network", "KnownSignal");
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start Wi-Fi/WebSocket services: %s", esp_err_to_name(ret));
         return;

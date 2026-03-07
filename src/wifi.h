@@ -12,6 +12,7 @@ typedef struct {
     int drum;
 } roaster_state_t;
 
-esp_err_t wifi_start(roaster_state_t *state);
+esp_err_t wifi_start(roaster_state_t *state, const char *ssid, const char *password);
+esp_err_t wifi_stop(void);
 
 #endif
