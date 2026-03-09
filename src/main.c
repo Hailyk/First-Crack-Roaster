@@ -4,6 +4,7 @@
 #include "esp_log.h"
 
 #include "wifi.h"
+//#include "display.h"
 
 static const char *TAG = "First_Crack_ROASTER";
 
@@ -16,6 +17,12 @@ void app_main(void) {
         .burner = 0,
         .drum = 0,
     };
+
+    // Initialize display
+    //display_init();
+
+    // Create display task for LVGL updates
+    //xTaskCreate(display_task, "display_task", 4096, NULL, 5, NULL);
 
     esp_err_t ret = wifi_start(&roaster_state, "Hidden Network", "KnownSignal");
     if (ret != ESP_OK) {
