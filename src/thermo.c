@@ -1,4 +1,3 @@
-#include <stdbool.h>
 #include <stdint.h>
 
 #include "freertos/FreeRTOS.h"
@@ -8,30 +7,36 @@
 
 #include "thermo.h"
 
-#define MCP9600_BEAN_I2C_ADDR    0x60
-#define MCP9600_ENV_I2C_ADDR     0x67
-#define MCP9600_REG_HOT_JUNCTION 0x00
+#define MCP9600_BEAN_I2C_ADDR       0x60
+#define MCP9600_ENV_I2C_ADDR        0x67
+#define MCP9600_REG_HOT_JUNCTION    0x00
+#define MCP9600_REG_SENSOR_CONFIG   0x05
+// Sensor config register bits [6:4]: 000 = K-type, bits [3:0]: filter coefficient (0 = off)
+#define MCP9600_SENSOR_CONFIG_K_TYPE 0x00
 
 #ifndef THERMO_I2C_PORT
 #define THERMO_I2C_PORT I2C_NUM_0
 #endif
 
-#ifndef THERMO_I2C_SDA_PIN
-#define THERMO_I2C_SDA_PIN GPIO_NUM_6
-#endif
-
-#ifndef THERMO_I2C_SCL_PIN
-#define THERMO_I2C_SCL_PIN GPIO_NUM_7
-#endif
-
-#ifndef THERMO_I2C_CLOCK_HZ
-#define THERMO_I2C_CLOCK_HZ 100000
-#endif
-
 static const char *TAG = "THERMO";
-static bool s_i2c_ready = false;
 
-static esp_err_t thermo_i2c_init_once(void);
+// Configures both MCP9600 sensors for K-type thermocouple.
+// Call once after the I2C bus has been initialized.
+esp_err_t thermo_init(void)
+{
+    uint8_t sensor_cfg_write[2] = {MCP9600_REG_SENSOR_CONFIG, MCP9600_SENSOR_CONFIG_K_TYPE};
+    uint8_t addrs[2] = {MCP9600_BEAN_I2C_ADDR, MCP9600_ENV_I2C_ADDR};
+    for (int i = 0; i < 2; i++) {
+        esp_err_t ret = i2c_master_write_to_device(THERMO_I2C_PORT, addrs[i], sensor_cfg_write,
+                                                    sizeof(sensor_cfg_write), pdMS_TO_TICKS(100));
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "MCP9600 (0x%02X) sensor config write failed: %s", addrs[i], esp_err_to_name(ret));
+            return ret;
+        }
+        ESP_LOGI(TAG, "MCP9600 (0x%02X) configured: K-type thermocouple", addrs[i]);
+    }
+    return ESP_OK;
+}
 
 static esp_err_t thermo_read_mcp9600_hot_junction_c(uint8_t i2c_addr, float *temperature_c)
 {
@@ -39,15 +44,10 @@ static esp_err_t thermo_read_mcp9600_hot_junction_c(uint8_t i2c_addr, float *tem
         return ESP_ERR_INVALID_ARG;
     }
 
-    esp_err_t ret = thermo_i2c_init_once();
-    if (ret != ESP_OK) {
-        return ret;
-    }
-
     const uint8_t register_addr = MCP9600_REG_HOT_JUNCTION;
     uint8_t raw_temp_bytes[2] = {0};
 
-    ret = i2c_master_write_read_device(
+    esp_err_t ret = i2c_master_write_read_device(
         THERMO_I2C_PORT,
         i2c_addr,
         &register_addr,
@@ -64,38 +64,6 @@ static esp_err_t thermo_read_mcp9600_hot_junction_c(uint8_t i2c_addr, float *tem
     int16_t fixed_temp = (int16_t)(((uint16_t)raw_temp_bytes[0] << 8) | raw_temp_bytes[1]);
     *temperature_c = (float)fixed_temp / 16.0f;
 
-    return ESP_OK;
-}
-
-static esp_err_t thermo_i2c_init_once(void)
-{
-    if (s_i2c_ready) {
-        return ESP_OK;
-    }
-
-    i2c_config_t cfg = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = THERMO_I2C_SDA_PIN,
-        .scl_io_num = THERMO_I2C_SCL_PIN,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = THERMO_I2C_CLOCK_HZ,
-        .clk_flags = 0,
-    };
-
-    esp_err_t ret = i2c_param_config(THERMO_I2C_PORT, &cfg);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "i2c_param_config failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    ret = i2c_driver_install(THERMO_I2C_PORT, cfg.mode, 0, 0, 0);
-    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "i2c_driver_install failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    s_i2c_ready = true;
     return ESP_OK;
 }
 
