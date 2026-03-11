@@ -4,7 +4,7 @@
 #include "esp_log.h"
 
 #include "wifi.h"
-//#include "display.h"
+#include "thermo.h"
 
 static const char *TAG = "First_Crack_Roaster";
 
@@ -18,11 +18,7 @@ void app_main(void) {
         .drum = 0,
     };
 
-    // Initialize display
-    //display_init();
-
-    // Create display task for LVGL updates
-    //xTaskCreate(display_task, "display_task", 4096, NULL, 5, NULL);
+    vTaskDelay(pdMS_TO_TICKS(3000));
 
     // Start AP mode and wait for WiFi credentials
     char ssid[33] = {0};
@@ -48,18 +44,18 @@ void app_main(void) {
     }
 
     while (1) {
-        roaster_state.bean_temp += 0.1f;
-        roaster_state.env_temp += 0.05f;
         roaster_state.exhaust_humidity += 0.001f;
 
-        if (roaster_state.bean_temp > 250.0f) {
-            roaster_state.bean_temp = 25.0f;
-        }
-        if (roaster_state.env_temp > 250.0f) {
-            roaster_state.env_temp = 25.0f;
-        }
         if (roaster_state.exhaust_humidity > 1.0f) {
             roaster_state.exhaust_humidity = 1.0f;
+        }
+
+        if (thermo_read_bean_temperature_c(&roaster_state.bean_temp) != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to read bean temperature");
+        }
+
+        if (thermo_read_env_temperature_c(&roaster_state.env_temp) != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to read environmental temperature");
         }
 
         vTaskDelay(pdMS_TO_TICKS(2000));
