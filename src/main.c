@@ -7,6 +7,8 @@
 
 #include "wifi.h"
 #include "thermo.h"
+#include "motor.h"
+#include "humidity.h"
 
 static const char *TAG = "First_Crack_Roaster";
 
@@ -68,6 +70,18 @@ void app_main(void) {
         return;
     }
 
+    ret = motor_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize motor sensor: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    ret = humidity_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize humidity sensor: %s", esp_err_to_name(ret));
+        return;
+    }
+
     // Start AP mode and wait for WiFi credentials
     char ssid[33] = {0};
     char password[64] = {0};
@@ -92,12 +106,6 @@ void app_main(void) {
     }
 
     while (1) {
-        roaster_state.exhaust_humidity += 0.001f;
-
-        if (roaster_state.exhaust_humidity > 1.0f) {
-            roaster_state.exhaust_humidity = 1.0f;
-        }
-
         if (thermo_read_bean_temperature_c(&roaster_state.bean_temp) != ESP_OK) {
             ESP_LOGW(TAG, "Failed to read bean temperature");
         }
@@ -105,6 +113,19 @@ void app_main(void) {
         if (thermo_read_env_temperature_c(&roaster_state.env_temp) != ESP_OK) {
             ESP_LOGW(TAG, "Failed to read environmental temperature");
         }
+
+        if (humidity_update_exhaust_humidity(&roaster_state.exhaust_humidity) != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to read exhaust humidity");
+        }
+
+        float rpm = 0.0f;
+        if (motor_read_rpm(&rpm) != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to read motor RPM");
+        } else {
+            ESP_LOGI(TAG, "Motor RPM: %.2f", rpm);
+        }
+
+        ESP_LOGI(TAG, "Exhaust humidity: %.2f%%", roaster_state.exhaust_humidity * 100.0f);
 
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
