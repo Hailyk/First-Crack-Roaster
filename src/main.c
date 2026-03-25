@@ -111,6 +111,11 @@ void app_main(void) {
     }
 
     while (1) {
+        esp_err_t wifi_ret = wifi_process_recovery(&roaster_state);
+        if (wifi_ret != ESP_OK) {
+            ESP_LOGW(TAG, "Wi-Fi recovery attempt failed: %s", esp_err_to_name(wifi_ret));
+        }
+
         if (thermo_read_bean_temperature_c(&roaster_state.bean_temp) != ESP_OK) {
             ESP_LOGW(TAG, "Failed to read bean temperature");
         }

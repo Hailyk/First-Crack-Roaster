@@ -24,6 +24,8 @@ static roaster_state_t *g_roaster_state = NULL;
 static httpd_handle_t server = NULL;
 static esp_event_handler_instance_t wifi_any_id = NULL;
 static esp_event_handler_instance_t wifi_got_ip = NULL;
+static esp_netif_t *s_ap_netif = NULL;
+static esp_netif_t *s_sta_netif = NULL;
 
 // Configuration portal variables
 static char selected_ssid[33] = {0};
@@ -31,6 +33,9 @@ static char selected_password[64] = {0};
 static bool credentials_received = false;
 static SemaphoreHandle_t credentials_mutex = NULL;
 static bool connection_successful = false;
+static int s_disconnect_retries = 0;
+static bool s_recovery_requested = false;
+static bool s_recovery_in_progress = false;
 
 // HTML page for WiFi configuration
 static const char *config_html = 
@@ -48,12 +53,12 @@ static const char *config_html =
 "<label for='ssid'>WiFi Network Name (SSID)</label>"
 "<input type='text' id='ssid' placeholder='Enter WiFi SSID' required/>"
 "<label for='password'>Password</label>"
-"<input type='password' id='password' placeholder='Enter WiFi password' required/>"
+"<input type='password' id='password' placeholder='Enter WiFi password (optional)'/>"
 "<button type='submit' id='connect'>Connect</button>"
 "</form>"
 "<div class='status' id='status'></div></div><script>"
 "function connectWiFi(e){e.preventDefault();const ssid=document.getElementById('ssid').value;const pwd=document.getElementById('password').value;"
-"if(!ssid||!pwd){alert('Please enter both SSID and password');return false;}"
+"if(!ssid){alert('Please enter the WiFi SSID');return false;}"
 "document.getElementById('status').textContent='Connecting...';"
 "document.getElementById('connect').disabled=true;fetch('/connect',{method:'POST',headers:{'Content-Type':'application/json'},"
 "body:JSON.stringify({ssid:ssid,password:pwd})}).then(r=>r.json()).then(data=>{"
@@ -87,15 +92,25 @@ static esp_err_t connect_handler(httpd_req_t *req) {
     cJSON *ssid_json = cJSON_GetObjectItem(json, "ssid");
     cJSON *password_json = cJSON_GetObjectItem(json, "password");
 
-    if (!cJSON_IsString(ssid_json) || !cJSON_IsString(password_json)) {
+    if (!cJSON_IsString(ssid_json)) {
         cJSON_Delete(json);
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
 
+    const char *password_value = "";
+    if (password_json != NULL && !cJSON_IsNull(password_json)) {
+        if (!cJSON_IsString(password_json)) {
+            cJSON_Delete(json);
+            httpd_resp_send_500(req);
+            return ESP_FAIL;
+        }
+        password_value = password_json->valuestring;
+    }
+
     if (credentials_mutex != NULL && xSemaphoreTake(credentials_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
         strncpy(selected_ssid, ssid_json->valuestring, sizeof(selected_ssid) - 1);
-        strncpy(selected_password, password_json->valuestring, sizeof(selected_password) - 1);
+        strncpy(selected_password, password_value, sizeof(selected_password) - 1);
         credentials_received = true;
         xSemaphoreGive(credentials_mutex);
         
@@ -210,7 +225,15 @@ static esp_err_t wifi_init_ap(void) {
         return ret;
     }
 
-    esp_netif_t *ap_netif = esp_netif_create_default_wifi_ap();
+    if (s_ap_netif == NULL) {
+        s_ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    }
+    if (s_ap_netif == NULL) {
+        s_ap_netif = esp_netif_create_default_wifi_ap();
+    }
+    if (s_ap_netif == NULL) {
+        return ESP_FAIL;
+    }
     
     // Set static IP for AP
     esp_netif_ip_info_t ip_info;
@@ -218,9 +241,9 @@ static esp_err_t wifi_init_ap(void) {
     ip_info.gw.addr = ESP_IP4TOADDR(192, 168, 1, 1);
     ip_info.netmask.addr = ESP_IP4TOADDR(255, 255, 255, 0);
     
-    esp_netif_dhcps_stop(ap_netif);
-    esp_netif_set_ip_info(ap_netif, &ip_info);
-    esp_netif_dhcps_start(ap_netif);
+    esp_netif_dhcps_stop(s_ap_netif);
+    esp_netif_set_ip_info(s_ap_netif, &ip_info);
+    esp_netif_dhcps_start(s_ap_netif);
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ret = esp_wifi_init(&cfg);
@@ -290,7 +313,15 @@ static esp_err_t try_wifi_connection(const char *ssid, const char *password) {
         return ret;
     }
 
-    esp_netif_create_default_wifi_sta();
+    if (s_sta_netif == NULL) {
+        s_sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    }
+    if (s_sta_netif == NULL) {
+        s_sta_netif = esp_netif_create_default_wifi_sta();
+    }
+    if (s_sta_netif == NULL) {
+        return ESP_FAIL;
+    }
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ret = esp_wifi_init(&cfg);
@@ -314,6 +345,10 @@ static esp_err_t try_wifi_connection(const char *ssid, const char *password) {
     wifi_config_t wifi_config = {0};
     strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
     strncpy((char *)wifi_config.sta.password, password, sizeof(wifi_config.sta.password) - 1);
+    wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    wifi_config.sta.threshold.rssi = -127;
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
 
     ret = esp_wifi_set_mode(WIFI_MODE_STA);
     if (ret != ESP_OK) {
@@ -339,8 +374,8 @@ static esp_err_t try_wifi_connection(const char *ssid, const char *password) {
         return ret;
     }
 
-    // Wait up to 15 seconds for connection
-    for (int i = 0; i < 30; i++) {
+    // Hidden SSIDs may require full-channel scan, so allow a longer connection window.
+    for (int i = 0; i < 60; i++) {
         if (connection_successful) {
             break;
         }
@@ -476,15 +511,64 @@ esp_err_t wifi_start_ap_with_config_portal(char *ssid_out, size_t ssid_size, cha
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data) {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        s_disconnect_retries = 0;
+        s_recovery_in_progress = false;
         esp_wifi_connect();
         ESP_LOGI(TAG, "Connecting to Wi-Fi...");
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        esp_wifi_connect();
-        ESP_LOGI(TAG, "Disconnected. Retrying connection...");
+        if (s_recovery_in_progress) {
+            return;
+        }
+
+        if (s_disconnect_retries < 10) {
+            s_disconnect_retries++;
+            esp_wifi_connect();
+            ESP_LOGW(TAG, "Disconnected. Retrying connection (%d/10)...", s_disconnect_retries);
+        } else {
+            if (!s_recovery_requested) {
+                s_recovery_requested = true;
+                ESP_LOGE(TAG, "Disconnected too many times. restarting wifi configuration portal...");
+            }
+        }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        s_disconnect_retries = 0;
+        s_recovery_requested = false;
+        s_recovery_in_progress = false;
         ESP_LOGI(TAG, "SUCCESS! Connected. IP Address: " IPSTR, IP2STR(&event->ip_info.ip));
     }
+}
+
+esp_err_t wifi_process_recovery(roaster_state_t *state) {
+    if (!s_recovery_requested || s_recovery_in_progress) {
+        return ESP_OK;
+    }
+
+    if (state == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    s_recovery_in_progress = true;
+    s_recovery_requested = false;
+
+    char ssid[33] = {0};
+    char password[64] = {0};
+
+    esp_err_t ret = wifi_stop();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "wifi_stop during recovery returned: %s", esp_err_to_name(ret));
+    }
+
+    ret = wifi_start_ap_with_config_portal(ssid, sizeof(ssid), password, sizeof(password));
+    if (ret != ESP_OK) {
+        s_recovery_in_progress = false;
+        return ret;
+    }
+
+    ret = wifi_start(state, ssid, password);
+    s_disconnect_retries = 0;
+    s_recovery_in_progress = false;
+    return ret;
 }
 
 esp_err_t wifi_start(roaster_state_t *state, const char *ssid, const char *password) {
@@ -572,6 +656,8 @@ esp_err_t wifi_stop(void) {
 
     esp_wifi_deinit();
     esp_netif_deinit();
+    s_ap_netif = NULL;
+    s_sta_netif = NULL;
 
     ESP_LOGI(TAG, "WiFi stopped");
     return ESP_OK;

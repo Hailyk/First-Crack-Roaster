@@ -6,6 +6,7 @@
 
 esp_err_t wifi_start_ap_with_config_portal(char *ssid_out, size_t ssid_size, char *password_out, size_t password_size);
 esp_err_t wifi_start(roaster_state_t *state, const char *ssid, const char *password);
+esp_err_t wifi_process_recovery(roaster_state_t *state);
 esp_err_t wifi_stop(void);
 
 #endif
