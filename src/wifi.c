@@ -174,11 +174,12 @@ static esp_err_t ws_handler(httpd_req_t *req) {
     char reply_str[256];
     snprintf(reply_str,
              sizeof(reply_str),
-             "{\"MessageID\": %d, \"Machine ID\": 0, \"Data\": {\"BT\": %.1f, \"ET\": %.1f, \"exhaust_humidity\": %.3f, \"air\": %d, \"burner\": %d, \"drum\": %d}}",
+             "{\"MessageID\": %d, \"Machine ID\": 0, \"Data\": {\"BT\": %.1f, \"ET\": %.1f, \"exhaust_humidity\": %.3f, \"drum_rpm\": %.2f, \"air\": %d, \"burner\": %d, \"drum\": %d}}",
              request_id,
              g_roaster_state->bean_temp,
              g_roaster_state->env_temp,
              g_roaster_state->exhaust_humidity * 100,
+             g_roaster_state->drum_rpm,
              g_roaster_state->air,
              g_roaster_state->burner,
              g_roaster_state->drum);

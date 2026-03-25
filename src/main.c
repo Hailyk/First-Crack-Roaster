@@ -5,6 +5,7 @@
 
 #include "driver/i2c.h"
 
+#include "main.h"
 #include "wifi.h"
 #include "thermo.h"
 #include "motor.h"
@@ -54,6 +55,7 @@ void app_main(void) {
         .air = 0,
         .burner = 0,
         .drum = 0,
+        .drum_rpm = 0.0f,
     };
 
     vTaskDelay(pdMS_TO_TICKS(3000));
@@ -81,6 +83,9 @@ void app_main(void) {
         ESP_LOGE(TAG, "Failed to initialize humidity sensor: %s", esp_err_to_name(ret));
         return;
     }
+
+    motor_set_pwm_percent(0.0f);
+    ESP_LOGI(TAG, "Motor set to 0%% PWM");
 
     // Start AP mode and wait for WiFi credentials
     char ssid[33] = {0};
@@ -118,14 +123,9 @@ void app_main(void) {
             ESP_LOGW(TAG, "Failed to read exhaust humidity");
         }
 
-        float rpm = 0.0f;
-        if (motor_read_rpm(&rpm) != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to read motor RPM");
-        } else {
-            ESP_LOGI(TAG, "Motor RPM: %.2f", rpm);
+        if (motor_read_rpm(&roaster_state.drum_rpm) != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to read drum RPM");
         }
-
-        ESP_LOGI(TAG, "Exhaust humidity: %.2f%%", roaster_state.exhaust_humidity * 100.0f);
 
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
