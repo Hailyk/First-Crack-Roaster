@@ -1,3 +1,6 @@
+#include <stdio.h>
+#include <string.h>
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_err.h"
@@ -10,6 +13,7 @@
 #include "thermo.h"
 #include "motor.h"
 #include "humidity.h"
+#include "display.h"
 
 static const char *TAG = "First_Crack_Roaster";
 
@@ -56,6 +60,7 @@ void app_main(void) {
         .burner = 0,
         .drum = 0,
         .drum_rpm = 0.0f,
+        .ip_address = {0},
     };
 
     vTaskDelay(pdMS_TO_TICKS(3000));
@@ -63,6 +68,25 @@ void app_main(void) {
     esp_err_t ret = i2c_master_bus_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize I2C bus: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    ret = display_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize display: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    ret = set_cursor(0, 0);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set display cursor: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    uint8_t display_text[] = "First Crack Roaster";
+    ret = display_send_data(display_text, sizeof(display_text) - 1U);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to write startup message to display: %s", esp_err_to_name(ret));
         return;
     }
 
@@ -94,13 +118,49 @@ void app_main(void) {
     ESP_LOGI(TAG, "Starting WiFi configuration portal...");
     ESP_LOGI(TAG, "Connect to WiFi network: First-Crack (password: 12345678)");
     ESP_LOGI(TAG, "Then open browser and go to: http://192.168.1.1");
+
+    strcpy((char *)display_text, "WiFi: First-Crack");
+    ret = set_cursor(1, 0);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set display cursor: %s", esp_err_to_name(ret));
+        return;
+    }
+    ret = display_send_data(display_text, strlen((char *)display_text));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to write WiFi instructions to display: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    strcpy((char *)display_text, "Password: 12345678");
+    ret = set_cursor(2, 0);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set display cursor: %s", esp_err_to_name(ret));
+        return;
+    }
+    ret = display_send_data(display_text, strlen((char *)display_text));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to write WiFi instructions to display: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    strcpy((char *)display_text, "http://192.168.1.1");
+    ret = set_cursor(3, 0);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set display cursor: %s", esp_err_to_name(ret));
+        return;
+    }
+    ret = display_send_data(display_text, strlen((char *)display_text));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to write WiFi instructions to display: %s", esp_err_to_name(ret));
+        return;
+    }
     
     ret = wifi_start_ap_with_config_portal(ssid, sizeof(ssid), password, sizeof(password));
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start configuration portal: %s", esp_err_to_name(ret));
         return;
     }
-    
+
     ESP_LOGI(TAG, "Connecting to WiFi network: %s", ssid);
     
     // Connect to WiFi and start WebSocket server
@@ -109,6 +169,70 @@ void app_main(void) {
         ESP_LOGE(TAG, "Failed to start Wi-Fi/WebSocket services: %s", esp_err_to_name(ret));
         return;
     }
+
+    // clear and reset display after WiFi setup
+    display_send_command(0x01); // Clear display
+    vTaskDelay(pdMS_TO_TICKS(100));
+    display_send_command(0x02); // Return home
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    // setup temp and motor template display
+    strcpy((char *)display_text, "Bean:      C");
+    ret = set_cursor(0, 0);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set display cursor: %s", esp_err_to_name(ret));
+        return;
+    }
+    ret = display_send_data(display_text, strlen((char *)display_text));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to write to display: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    strcpy((char *)display_text, "Env:       C");
+    ret = set_cursor(1, 0);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set display cursor: %s", esp_err_to_name(ret));
+        return;
+    }
+    ret = display_send_data(display_text, strlen((char *)display_text));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to write to display: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    strcpy((char *)display_text, "Motor: 00.0RPM");
+    ret = set_cursor(2, 0);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set display cursor: %s", esp_err_to_name(ret));
+        return;
+    }
+    ret = display_send_data(display_text, strlen((char *)display_text));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to write to display: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    char ip_str[20] = {0};
+    snprintf(ip_str, sizeof(ip_str), "IP: %u.%u.%u.%u", 
+        roaster_state.ip_address[0], 
+        roaster_state.ip_address[1], 
+        roaster_state.ip_address[2], 
+        roaster_state.ip_address[3]);
+    strcpy((char *)display_text, ip_str);
+    ret = set_cursor(3, 0);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set display cursor: %s", esp_err_to_name(ret));
+        return;
+    }
+    ret = display_send_data(display_text, strlen((char *)display_text));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to write to display: %s", esp_err_to_name(ret));
+        return;
+    }
+
+
+    bool forward = false;
 
     while (1) {
         esp_err_t wifi_ret = wifi_process_recovery(&roaster_state);
@@ -130,6 +254,54 @@ void app_main(void) {
 
         if (motor_read_rpm(&roaster_state.drum_rpm) != ESP_OK) {
             ESP_LOGW(TAG, "Failed to read drum RPM");
+        }
+
+        float test_pwm = forward ? 55.0f : -55.0f;
+        if (motor_set_pwm_percent(test_pwm) != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to set motor PWM to %.1f%%", test_pwm);
+        }
+        forward = !forward;
+
+        snprintf((char *)display_text, sizeof(display_text), "%05.1f", roaster_state.bean_temp);
+        ret = set_cursor(0, 6);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to set display cursor: %s", esp_err_to_name(ret));
+            return;
+        }
+        ret = display_send_data(display_text, strlen((char *)display_text));
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to write bean temp to display: %s", esp_err_to_name(ret));
+            return;
+        }
+
+        snprintf((char *)display_text, sizeof(display_text), "%05.1f", roaster_state.env_temp);
+        ret = set_cursor(1, 6);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to set display cursor: %s", esp_err_to_name(ret));
+            return;
+        }
+        ret = display_send_data(display_text, strlen((char *)display_text));
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to write env temp to display: %s", esp_err_to_name(ret));
+            return;
+        }
+
+        if (roaster_state.drum_rpm < 0.0f) {
+            ret = set_cursor(2, 6);
+            snprintf((char *)display_text, sizeof(display_text), "%05.1f", roaster_state.drum_rpm);
+        }
+        else {
+            ret = set_cursor(2, 7);
+            snprintf((char *)display_text, sizeof(display_text), "%04.1f", roaster_state.drum_rpm);
+        }
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to set display cursor: %s", esp_err_to_name(ret));
+            return;
+        }
+        ret = display_send_data(display_text, strlen((char *)display_text));
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to write drum RPM to display: %s", esp_err_to_name(ret));
+            return;
         }
 
         vTaskDelay(pdMS_TO_TICKS(2000));

@@ -9,6 +9,7 @@ typedef struct {
     int burner;
     int drum;
     float drum_rpm;
+    uint8_t ip_address[4];
 } roaster_state_t;
 
 #endif

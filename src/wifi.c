@@ -11,9 +11,11 @@
 #include "esp_wifi.h"
 #include "nvs_flash.h"
 #include "cJSON.h"
+#include "lwip/ip4_addr.h"
 #include "lwip/ip_addr.h"
 
 #include "wifi.h"
+#include "display.h"
 
 #define AP_SSID "First-Crack"
 #define AP_PASSWORD "12345678"
@@ -36,6 +38,66 @@ static bool connection_successful = false;
 static int s_disconnect_retries = 0;
 static bool s_recovery_requested = false;
 static bool s_recovery_in_progress = false;
+static uint8_t s_last_ip_address[4] = {0};
+static bool s_has_last_ip_address = false;
+
+static void display_write_line(uint8_t row, const char *text)
+{
+    if (text == NULL) {
+        return;
+    }
+
+    if (set_cursor(row, 0) != ESP_OK) {
+        return;
+    }
+
+    display_send_data((const uint8_t *)text, strlen(text));
+}
+
+static void show_wifi_recovery_screen(void)
+{
+    char line1[21] = {0};
+    char line2[21] = {0};
+    char line3[21] = {0};
+
+    snprintf(line1, sizeof(line1), "SSID: %s", AP_SSID);
+    snprintf(line2, sizeof(line2), "PWD: %s", AP_PASSWORD);
+    snprintf(line3, sizeof(line3), "IP: 192.168.1.1");
+
+    display_send_command(0x01); // Clear display
+    vTaskDelay(pdMS_TO_TICKS(100));
+    display_send_command(0x02); // Return home
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    display_write_line(0, "WiFi disconnected");
+    display_write_line(1, line1);
+    display_write_line(2, line2);
+    display_write_line(3, line3);
+}
+
+static void store_ip_address(const esp_ip4_addr_t *ip_addr)
+{
+    if (ip_addr == NULL) {
+        return;
+    }
+
+    s_last_ip_address[0] = ip4_addr1(ip_addr);
+    s_last_ip_address[1] = ip4_addr2(ip_addr);
+    s_last_ip_address[2] = ip4_addr3(ip_addr);
+    s_last_ip_address[3] = ip4_addr4(ip_addr);
+    s_has_last_ip_address = true;
+
+    if (g_roaster_state != NULL) {
+        memcpy(g_roaster_state->ip_address, s_last_ip_address, sizeof(s_last_ip_address));
+    }
+}
+
+static void sync_cached_ip_to_state(void)
+{
+    if (g_roaster_state != NULL && s_has_last_ip_address) {
+        memcpy(g_roaster_state->ip_address, s_last_ip_address, sizeof(s_last_ip_address));
+    }
+}
 
 // HTML page for WiFi configuration
 static const char *config_html = 
@@ -292,6 +354,7 @@ static void wifi_sta_event_handler(void *arg, esp_event_base_t event_base, int32
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "SUCCESS! Connected. IP Address: " IPSTR, IP2STR(&event->ip_info.ip));
+        store_ip_address(&event->ip_info.ip);
         connection_successful = true;
     }
 }
@@ -466,6 +529,7 @@ esp_err_t wifi_start_ap_with_config_portal(char *ssid_out, size_t ssid_size, cha
         httpd_register_uri_handler(server, &connect_uri);
 
         ESP_LOGI(TAG, "Configuration portal started at http://192.168.1.1");
+        show_wifi_recovery_screen();
 
         // Wait for credentials
         ESP_LOGI(TAG, "Waiting for WiFi credentials...");
@@ -536,6 +600,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         s_recovery_requested = false;
         s_recovery_in_progress = false;
         ESP_LOGI(TAG, "SUCCESS! Connected. IP Address: " IPSTR, IP2STR(&event->ip_info.ip));
+        store_ip_address(&event->ip_info.ip);
     }
 }
 
@@ -550,6 +615,8 @@ esp_err_t wifi_process_recovery(roaster_state_t *state) {
 
     s_recovery_in_progress = true;
     s_recovery_requested = false;
+
+    show_wifi_recovery_screen();
 
     char ssid[33] = {0};
     char password[64] = {0};
@@ -577,6 +644,7 @@ esp_err_t wifi_start(roaster_state_t *state, const char *ssid, const char *passw
     }
 
     g_roaster_state = state;
+    sync_cached_ip_to_state();
 
     // NVS should already be initialized from the AP portal
     esp_err_t ret = nvs_flash_init();

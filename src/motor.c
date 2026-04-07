@@ -1,5 +1,6 @@
 #include <stdbool.h>
 #include <stdint.h>
+#include <math.h>
 
 #include "freertos/FreeRTOS.h"
 
@@ -17,11 +18,13 @@
 #define AS5600_COUNTS_PER_REV    4096
 #define MOTOR_RPM_FILTER_ALPHA   0.20f
 
-#define MOTOR_PWM_GPIO           GPIO_NUM_3
-#define MOTOR_PWM_FREQ_HZ        10000
+#define MOTOR_PWM_FWD_GPIO       GPIO_NUM_3
+#define MOTOR_PWM_REV_GPIO       GPIO_NUM_4
+#define MOTOR_PWM_FREQ_HZ        20000
 #define MOTOR_PWM_LEDC_MODE      LEDC_LOW_SPEED_MODE
 #define MOTOR_PWM_LEDC_TIMER     LEDC_TIMER_0
-#define MOTOR_PWM_LEDC_CHANNEL   LEDC_CHANNEL_0
+#define MOTOR_PWM_FWD_CHANNEL    LEDC_CHANNEL_0
+#define MOTOR_PWM_REV_CHANNEL    LEDC_CHANNEL_1
 #define MOTOR_PWM_DUTY_RES       LEDC_TIMER_10_BIT
 #define MOTOR_PWM_DUTY_MAX       ((1U << 10) - 1U)
 
@@ -59,17 +62,32 @@ static esp_err_t motor_pwm_init(void)
 		return ret;
 	}
 
-	ledc_channel_config_t channel_cfg = {
-		.gpio_num = MOTOR_PWM_GPIO,
+	ledc_channel_config_t fwd_channel_cfg = {
+		.gpio_num = MOTOR_PWM_FWD_GPIO,
 		.speed_mode = MOTOR_PWM_LEDC_MODE,
-		.channel = MOTOR_PWM_LEDC_CHANNEL,
+		.channel = MOTOR_PWM_FWD_CHANNEL,
 		.intr_type = LEDC_INTR_DISABLE,
 		.timer_sel = MOTOR_PWM_LEDC_TIMER,
 		.duty = 0,
 		.hpoint = 0,
 	};
 
-	ret = ledc_channel_config(&channel_cfg);
+	ret = ledc_channel_config(&fwd_channel_cfg);
+	if (ret != ESP_OK) {
+		return ret;
+	}
+
+	ledc_channel_config_t rev_channel_cfg = {
+		.gpio_num = MOTOR_PWM_REV_GPIO,
+		.speed_mode = MOTOR_PWM_LEDC_MODE,
+		.channel = MOTOR_PWM_REV_CHANNEL,
+		.intr_type = LEDC_INTR_DISABLE,
+		.timer_sel = MOTOR_PWM_LEDC_TIMER,
+		.duty = 0,
+		.hpoint = 0,
+	};
+
+	ret = ledc_channel_config(&rev_channel_cfg);
 	if (ret != ESP_OK) {
 		return ret;
 	}
@@ -107,7 +125,7 @@ esp_err_t motor_init(void)
 {
 	esp_err_t ret = motor_pwm_init();
 	if (ret != ESP_OK) {
-		ESP_LOGE(TAG, "PWM init failed on GPIO2: %s", esp_err_to_name(ret));
+		ESP_LOGE(TAG, "PWM init failed on GPIO%d/GPIO%d: %s", MOTOR_PWM_FWD_GPIO, MOTOR_PWM_REV_GPIO, esp_err_to_name(ret));
 		return ret;
 	}
 
@@ -123,7 +141,10 @@ esp_err_t motor_init(void)
 	s_motor.filtered_rpm = 0.0f;
 	s_motor.initialized = true;
 
-	ESP_LOGI(TAG, "Motor initialized: AS5600=0x%02X PWM_GPIO=%d", AS5600_I2C_ADDR, MOTOR_PWM_GPIO);
+	ESP_LOGI(TAG, "Motor initialized: AS5600=0x%02X PWM_FWD_GPIO=%d PWM_REV_GPIO=%d",
+		AS5600_I2C_ADDR,
+		MOTOR_PWM_FWD_GPIO,
+		MOTOR_PWM_REV_GPIO);
 	return ESP_OK;
 }
 
@@ -205,19 +226,33 @@ esp_err_t motor_set_pwm_percent(float pwm_percent)
 		return ESP_ERR_INVALID_STATE;
 	}
 
-	if (pwm_percent < 0.0f) {
-		pwm_percent = 0.0f;
-	} else if (pwm_percent > 100.0f) {
+	if (pwm_percent > 100.0f) {
 		pwm_percent = 100.0f;
+	} else if (pwm_percent < -100.0f) {
+		pwm_percent = -100.0f;
 	}
 
-	uint32_t duty = (uint32_t)((pwm_percent * (float)MOTOR_PWM_DUTY_MAX) / 100.0f + 0.5f);
-	esp_err_t ret = ledc_set_duty(MOTOR_PWM_LEDC_MODE, MOTOR_PWM_LEDC_CHANNEL, duty);
+	float duty_percent = fabsf(pwm_percent);
+	uint32_t duty = (uint32_t)((duty_percent * (float)MOTOR_PWM_DUTY_MAX) / 100.0f + 0.5f);
+	uint32_t fwd_duty = (pwm_percent >= 0.0f) ? duty : 0U;
+	uint32_t rev_duty = (pwm_percent < 0.0f) ? duty : 0U;
+
+	esp_err_t ret = ledc_set_duty(MOTOR_PWM_LEDC_MODE, MOTOR_PWM_FWD_CHANNEL, fwd_duty);
 	if (ret != ESP_OK) {
 		return ret;
 	}
 
-	ret = ledc_update_duty(MOTOR_PWM_LEDC_MODE, MOTOR_PWM_LEDC_CHANNEL);
+	ret = ledc_set_duty(MOTOR_PWM_LEDC_MODE, MOTOR_PWM_REV_CHANNEL, rev_duty);
+	if (ret != ESP_OK) {
+		return ret;
+	}
+
+	ret = ledc_update_duty(MOTOR_PWM_LEDC_MODE, MOTOR_PWM_FWD_CHANNEL);
+	if (ret != ESP_OK) {
+		return ret;
+	}
+
+	ret = ledc_update_duty(MOTOR_PWM_LEDC_MODE, MOTOR_PWM_REV_CHANNEL);
 	if (ret != ESP_OK) {
 		return ret;
 	}
@@ -228,10 +263,6 @@ esp_err_t motor_set_pwm_percent(float pwm_percent)
 
 esp_err_t motor_set_target_rpm(float target_rpm)
 {
-	if (target_rpm < 0.0f) {
-		return ESP_ERR_INVALID_ARG;
-	}
-
 	s_motor.target_rpm = target_rpm;
 	return ESP_OK;
 }
@@ -242,7 +273,7 @@ esp_err_t motor_control_step(float *measured_rpm)
 		return ESP_ERR_INVALID_STATE;
 	}
 
-	if (s_motor.target_rpm <= 0.0f) {
+	if (s_motor.target_rpm == 0.0f) {
 		esp_err_t stop_ret = motor_set_pwm_percent(0.0f);
 		if (measured_rpm != NULL) {
 			*measured_rpm = 0.0f;
