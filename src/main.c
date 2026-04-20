@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -12,7 +13,6 @@
 #include "wifi.h"
 #include "thermo.h"
 #include "motor.h"
-#include "humidity.h"
 #include "display.h"
 
 static const char *TAG = "First_Crack_Roaster";
@@ -55,11 +55,9 @@ void app_main(void) {
     roaster_state_t roaster_state = {
         .bean_temp = 25.0f,
         .env_temp = 20.0f,
-        .exhaust_humidity = 0.05f,
         .air = 0,
         .burner = 0,
         .drum = 0,
-        .drum_rpm = 0.0f,
         .ip_address = {0},
     };
 
@@ -98,13 +96,7 @@ void app_main(void) {
 
     ret = motor_init();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize motor sensor: %s", esp_err_to_name(ret));
-        return;
-    }
-
-    ret = humidity_init();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize humidity sensor: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to initialize motor PWM: %s", esp_err_to_name(ret));
         return;
     }
 
@@ -201,7 +193,7 @@ void app_main(void) {
         return;
     }
 
-    strcpy((char *)display_text, "Motor: 00.0RPM");
+    strcpy((char *)display_text, "Motor: 00.0%  ");
     ret = set_cursor(2, 0);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to set display cursor: %s", esp_err_to_name(ret));
@@ -248,19 +240,16 @@ void app_main(void) {
             ESP_LOGW(TAG, "Failed to read environmental temperature");
         }
 
-        if (humidity_update_exhaust_humidity(&roaster_state.exhaust_humidity) != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to read exhaust humidity");
+        float drum_magnitude = fabsf((float)roaster_state.drum);
+        float motor_pwm = 0.0f;
+        if (drum_magnitude > 0.0f) {
+            motor_pwm = forward ? drum_magnitude : -drum_magnitude;
+            forward = !forward;
         }
 
-        if (motor_read_rpm(&roaster_state.drum_rpm) != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to read drum RPM");
+        if (motor_set_pwm_percent(motor_pwm) != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to set motor PWM to %.1f%%", motor_pwm);
         }
-
-        float test_pwm = forward ? 55.0f : -55.0f;
-        if (motor_set_pwm_percent(test_pwm) != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to set motor PWM to %.1f%%", test_pwm);
-        }
-        forward = !forward;
 
         snprintf((char *)display_text, sizeof(display_text), "%05.1f", roaster_state.bean_temp);
         ret = set_cursor(0, 6);
@@ -286,21 +275,15 @@ void app_main(void) {
             return;
         }
 
-        if (roaster_state.drum_rpm < 0.0f) {
-            ret = set_cursor(2, 6);
-            snprintf((char *)display_text, sizeof(display_text), "%05.1f", roaster_state.drum_rpm);
-        }
-        else {
-            ret = set_cursor(2, 7);
-            snprintf((char *)display_text, sizeof(display_text), "%04.1f", roaster_state.drum_rpm);
-        }
+        ret = set_cursor(2, 7);
+        snprintf((char *)display_text, sizeof(display_text), "%+05.1f", motor_pwm);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Failed to set display cursor: %s", esp_err_to_name(ret));
             return;
         }
         ret = display_send_data(display_text, strlen((char *)display_text));
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to write drum RPM to display: %s", esp_err_to_name(ret));
+            ESP_LOGE(TAG, "Failed to write motor PWM to display: %s", esp_err_to_name(ret));
             return;
         }
 
