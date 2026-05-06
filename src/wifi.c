@@ -16,6 +16,7 @@
 
 #include "wifi.h"
 #include "display.h"
+#include "motor.h"
 
 #define AP_SSID "First-Crack"
 #define AP_PASSWORD "12345678"
@@ -40,6 +41,29 @@ static bool s_recovery_requested = false;
 static bool s_recovery_in_progress = false;
 static uint8_t s_last_ip_address[4] = {0};
 static bool s_has_last_ip_address = false;
+
+static int clamp_drum_value(int value)
+{
+    if (value > 100) {
+        return 100;
+    }
+
+    if (value < -100) {
+        return -100;
+    }
+
+    return value;
+}
+
+static float get_drum_cont_pwm(int drum_cont)
+{
+    // Continuous directional rotation is enabled only outside the deadband.
+    if (drum_cont > 40 || drum_cont < -40) {
+        return (float)drum_cont;
+    }
+
+    return 0.0f;
+}
 
 static void display_write_line(uint8_t row, const char *text)
 {
@@ -241,8 +265,27 @@ static esp_err_t ws_handler(httpd_req_t *req) {
 
         cJSON *drum_json = cJSON_GetObjectItemCaseSensitive(json, "drum");
         if (cJSON_IsNumber(drum_json)) {
-            g_roaster_state->drum = drum_json->valueint;
+            g_roaster_state->drum = clamp_drum_value(drum_json->valueint);
+            g_roaster_state->drum_cont_mode = false;
             ESP_LOGI(TAG, "Updated drum to %d", g_roaster_state->drum);
+        }
+
+        cJSON *drum_cont_json = cJSON_GetObjectItemCaseSensitive(json, "drum_cont");
+        if (cJSON_IsNumber(drum_cont_json)) {
+            g_roaster_state->drum_cont = clamp_drum_value(drum_cont_json->valueint);
+            g_roaster_state->drum_cont_mode = true;
+            g_roaster_state->motor_pwm = get_drum_cont_pwm(g_roaster_state->drum_cont);
+
+            esp_err_t motor_ret = motor_set_pwm_percent(g_roaster_state->motor_pwm);
+            if (motor_ret != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to set motor PWM to %.1f%% from drum_cont=%d",
+                         g_roaster_state->motor_pwm,
+                         g_roaster_state->drum_cont);
+            } else {
+                ESP_LOGI(TAG, "Updated drum_cont to %d, applied motor PWM %.1f%%",
+                         g_roaster_state->drum_cont,
+                         g_roaster_state->motor_pwm);
+            }
         }
 
         cJSON_Delete(json);
@@ -251,13 +294,14 @@ static esp_err_t ws_handler(httpd_req_t *req) {
     char reply_str[256];
     snprintf(reply_str,
              sizeof(reply_str),
-             "{\"MessageID\": %d, \"Machine ID\": 0, \"Data\": {\"BT\": %.1f, \"ET\": %.1f, \"air\": %d, \"burner\": %d, \"drum\": %d}}",
+             "{\"MessageID\": %d, \"Machine ID\": 0, \"Data\": {\"BT\": %.1f, \"ET\": %.1f, \"air\": %d, \"burner\": %d, \"drum\": %d, \"drum_cont\": %d}}",
              request_id,
              g_roaster_state->bean_temp,
              g_roaster_state->env_temp,
              g_roaster_state->air,
              g_roaster_state->burner,
-             g_roaster_state->drum);
+             g_roaster_state->drum,
+             g_roaster_state->drum_cont);
 
     httpd_ws_frame_t reply_pkt;
     memset(&reply_pkt, 0, sizeof(httpd_ws_frame_t));

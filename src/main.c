@@ -58,6 +58,9 @@ void app_main(void) {
         .air = 0,
         .burner = 0,
         .drum = 0,
+        .drum_cont = 0,
+        .drum_cont_mode = false,
+        .motor_pwm = 0.0f,
         .ip_address = {0},
     };
 
@@ -222,8 +225,6 @@ void app_main(void) {
         ESP_LOGE(TAG, "Failed to write to display: %s", esp_err_to_name(ret));
         return;
     }
-
-
     bool forward = false;
 
     while (1) {
@@ -240,15 +241,23 @@ void app_main(void) {
             ESP_LOGW(TAG, "Failed to read environmental temperature");
         }
 
-        float drum_magnitude = fabsf((float)roaster_state.drum);
-        float motor_pwm = 0.0f;
-        if (drum_magnitude > 0.0f) {
-            motor_pwm = forward ? drum_magnitude : -drum_magnitude;
-            forward = !forward;
+        float desired_motor_pwm = 0.0f;
+        if (roaster_state.drum_cont_mode) {
+            if (roaster_state.drum_cont > 40 || roaster_state.drum_cont < -40) {
+                desired_motor_pwm = (float)roaster_state.drum_cont;
+            }
+        } else {
+            float drum_magnitude = fabsf((float)roaster_state.drum);
+            if (drum_magnitude > 0.0f) {
+                desired_motor_pwm = forward ? drum_magnitude : -drum_magnitude;
+                forward = !forward;
+            }
         }
 
-        if (motor_set_pwm_percent(motor_pwm) != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to set motor PWM to %.1f%%", motor_pwm);
+        if (motor_set_pwm_percent(desired_motor_pwm) != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to set motor PWM to %.1f%%", desired_motor_pwm);
+        } else {
+            roaster_state.motor_pwm = desired_motor_pwm;
         }
 
         snprintf((char *)display_text, sizeof(display_text), "%05.1f", roaster_state.bean_temp);
@@ -276,7 +285,7 @@ void app_main(void) {
         }
 
         ret = set_cursor(2, 7);
-        snprintf((char *)display_text, sizeof(display_text), "%+05.1f", motor_pwm);
+        snprintf((char *)display_text, sizeof(display_text), "%+05.1f", roaster_state.motor_pwm);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Failed to set display cursor: %s", esp_err_to_name(ret));
             return;
